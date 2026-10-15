@@ -1,0 +1,11 @@
+# Fichiers locaux ou privés à ne pas publier
+.env
+.env.*
+!.env.example
+index.html
+*.ged
+*.gedcom
+*.b64
+contributions.json
+data/
+backups/
