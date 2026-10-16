@@ -1,6 +1,7 @@
 import {readFileSync, writeFileSync} from 'node:fs';
 import {gzipSync} from 'node:zlib';
 import {patchApp, report} from './patch-app.mjs';
+import {exclureMineurs} from './exclure-mineurs.mjs';
 
 // Produit localement les variables APP_CHUNK_* attendues par la fonction Railway.
 // Ne pas ajouter au dépôt Git le fichier .env.railway généré.
@@ -23,6 +24,25 @@ const input = positional[0] || 'index.html';
 const output = positional[1] || '.env.railway';
 
 let html = readFileSync(input, 'utf8');
+
+// Le fichier publie ne doit pas exposer d'enfant : nom, date et lieu de
+// naissance d'une personne mineure ne sont pas destines a une page publique.
+// --garder-mineurs desactive ce retrait.
+{
+  const r = exclureMineurs(html, {actif: !flags.has('--garder-mineurs')});
+  if (r.erreur) {
+    console.error('ECHEC : ' + r.erreur);
+    process.exit(1);
+  }
+  if (r.modifie) {
+    console.log('Personnes mineures retirees du fichier publie :');
+    r.exclus.forEach(p => console.log('  - ' + p.nom + ' (' + (p.naissance || 'date inconnue') + ')'));
+    console.log('  personnes publiees : ' + r.personnes);
+    html = r.html;
+  } else if (!flags.has('--garder-mineurs')) {
+    console.log('Aucune personne mineure a retirer.');
+  }
+}
 
 if (!flags.has('--no-patch')) {
   const result = patchApp(html);

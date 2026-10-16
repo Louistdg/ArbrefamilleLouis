@@ -109,6 +109,13 @@ ok('/health annonce text/plain', /text\/plain/.test(rHealth.headers.get('content
 const rRobots = await call('/robots.txt');
 ok('/robots.txt interdit l indexation', (await rRobots.text()).includes('Disallow: /'));
 ok('route inconnue -> 404', (await call('/nope')).status === 404);
+const rSw = await call('/sw.js');
+const swSource = await rSw.text();
+ok('/sw.js servi en javascript', rSw.status === 200 && /javascript/.test(rSw.headers.get('content-type') || ''), rSw.status);
+ok('le service worker met en cache mais sert le reseau en priorite',
+  swSource.includes('await fetch(req)') && swSource.includes('caches.match(req)'));
+ok('le service worker ne met pas les API en cache', swSource.includes("indexOf('/api/')===0"));
+ok('le service worker est revalide a chaque chargement', /no-cache/.test(rSw.headers.get('cache-control') || ''));
 
 const rState = await call('/api/state');
 const state = await rState.json();
@@ -177,6 +184,37 @@ const results = await Promise.all(Array.from({length: 10}, (_, i) =>
 ok('10 ajouts simultanes tous acceptes', results.every(r => r.status === 200), results.map(r => r.status));
 const after = (await (await call('/api/contributions')).json()).items.length;
 ok('aucun ajout perdu (lecture-modifier-ecrire serialise)', after === before + 10, {before, after});
+
+/* ---------------- effacement d'un champ errone ---------------- */
+console.log('\n4b) Effacement d\'un champ : absent = inchange, null = effacer, texte = renseigner');
+const edit = (body) => jpost('/api/contributions', {kind: 'edit', targetId: '@I1@', ...body}, auth);
+ok('une correction vide de tout contenu est refusee', (await edit({note: ''})).status === 400);
+const rSet = await edit({birthDate: '1937-05-12', note: 'acte'});
+ok('une correction qui renseigne est acceptee', rSet.status === 200, rSet.status);
+const itemSet = (await rSet.json()).item;
+ok('le champ absent n\'est pas stocke (donc non applique)', !('birthPlace' in itemSet), Object.keys(itemSet));
+ok('le champ renseigne est stocke', itemSet.birthDate === '1937-05-12');
+
+const rClear = await edit({birthDate: null});
+ok('un effacement seul est accepte', rClear.status === 200, rClear.status);
+const itemClear = (await rClear.json()).item;
+ok('l\'effacement est stocke comme null', itemClear.birthDate === null, itemClear.birthDate);
+ok('les autres champs restent absents', !('birthPlace' in itemClear));
+
+const rOld = await edit({birthDate: '', birthPlace: '', note: 'precision'});
+ok('une correction vide est refusee', (await edit({birthDate: '', birthPlace: ''})).status === 400);
+ok('une chaine vide reste acceptee des qu\'un autre champ est renseigne', rOld.status === 200, rOld.status);
+const itemOld = (await rOld.json()).item;
+ok('une chaine vide n\'est PAS un effacement (stockee telle quelle)', itemOld.birthDate === '', JSON.stringify(itemOld.birthDate));
+
+/* ---------------- le prenom de l'auteur n'est pas public ---------------- */
+console.log('\n4c) Prenom de l\'auteur : visible seulement apres deverrouillage');
+const anonyme = (await (await call('/api/contributions')).json()).items;
+ok('aucun prenom d\'auteur sans deverrouillage',
+  anonyme.every(it => it.author === undefined), anonyme.map(it => it.author).filter(Boolean));
+const avecSession = (await (await call('/api/contributions', {headers: {cookie}})).json()).items;
+ok('les ajouts restent lisibles sans deverrouillage', anonyme.length === avecSession.length);
+ok('le nombre d\'ajouts est identique avec et sans session', anonyme.length > 0);
 
 const items = (await (await call('/api/contributions')).json()).items;
 const victim = items[items.length - 1];

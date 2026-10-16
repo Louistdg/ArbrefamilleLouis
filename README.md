@@ -19,6 +19,47 @@ Pour une sauvegarde intégrale avec les données généalogiques, privilégier u
 
 Source de référence : service Railway officiel `Arbre famille Louis`. Le service `notre-histoire-copie` est distinct et n'a pas été modifié par cette publication.
 
+## Comment ce service est réellement déployé
+
+Point important, et non évident : **le service n'est pas déployé depuis ce dépôt GitHub.**
+
+- L'instance tourne sur une image `ghcr.io/railwayapp/function-bun:1.4.0` avec
+  `builder: RAILPACK` et **aucun dépôt lié** (`source.repo` est `null`).
+- Le code serveur est **inliné en base64 dans le `startCommand`** de l'instance :
+  `./run.sh <base64 de railway-function.js>`. Le format a été vérifié octet pour
+  octet contre le blob Git du commit publié.
+- La page, elle, est livrée par les variables `APP_CHUNK_COUNT` et `APP_CHUNK_*`.
+
+Conséquence : **un `git push` ne déploie rien.** Pour publier une modification, il faut
+à la fois mettre à jour les variables `APP_CHUNK_*` (produites par
+`prepare-bundle.mjs`) **et** réécrire le `startCommand` avec le nouveau
+`railway-function.js` encodé en base64, puis redéployer.
+
+Marche à suivre :
+
+```sh
+# 1. fabriquer le bundle (retire les mineurs, applique les correctifs, découpe en variables)
+node scripts/prepare-bundle.mjs index.html .env.railway
+
+# 2. encoder le serveur pour le startCommand
+node -e "const {readFileSync}=require('fs');const s=readFileSync('railway-function.js','utf8').replace(/\r\n/g,'\n');console.log('./run.sh '+Buffer.from(s,'utf8').toString('base64'))"
+
+# 3. mettre à jour APP_CHUNK_* puis le startCommand sur l'instance du service,
+#    et redéployer (API GraphQL Railway : variableCollectionUpsert puis
+#    serviceInstanceUpdate, puis serviceInstanceRedeploy)
+```
+
+## Protection des personnes mineures
+
+`scripts/prepare-bundle.mjs` retire du fichier publié toute personne **vivante et
+encore mineure** : son nom, sa date et son lieu de naissance n'ont pas à figurer sur
+une page publique. Le retrait est calculé à partir de la date complète quand elle est
+connue (comparer les seules années laisserait passer un mineur dont l'anniversaire
+n'est pas encore arrivé), et les compteurs de la colonne latérale sont nettoyés en
+conséquence. Chaque personne retirée est nommée dans la sortie du script.
+
+`--garder-mineurs` désactive ce retrait.
+
 ## Correctifs d'audit de l'application
 
 Le HTML de l'application n'étant pas versionné, ses correctifs vivent dans
@@ -42,6 +83,12 @@ script n'est qu'un pont tant que cette source n'est pas versionnée.
 | `mobile-partage`, `mobile-direction` | Sur téléphone, le bouton **Partager** et les commandes Ancêtres / Descendance / Vue familiale étaient supprimés (`display:none!important`), sans équivalent dans le menu. |
 | `feuille-correctifs` | Contrastes sous le seuil WCAG AA (2,96 à 4,29), anneau de focus absent sur la recherche, transitions non neutralisées en « mouvement réduit ». |
 | `favicon-lien` | Le navigateur redemandait `/favicon.ico` à chaque chargement. |
+| `espacement-generations` | 108 unités de vide étaient perdues par rang : l'arbre était inutilement écrasé. Mesuré et corrigé avec vérification du routage des liens. |
+| `fit-plancher` (porté à 0,75) | Une branche s'ouvre maintenant à une échelle lisible et **centrée sur la personne de départ**, au lieu d'être écrasée. Mesuré : branche paternelle 0,496 → 0,75, **dates affichées 0/21 → 21/21** ; vue par défaut inchangée. |
+| `mobile-*` et `feuille-correctifs` | Sur téléphone, le **titre**, le **compteur**, la **légende** (qui porte la case « Afficher les fratries ») et le **recentrage** étaient supprimés : l'utilisateur ne savait plus quelle branche il regardait. |
+| `recherche-troncature` | La recherche s'arrêtait à 25 résultats sans le dire ; le total est désormais annoncé. |
+| `effacement-*` | Une correction ne pouvait **jamais vider** un champ erroné : le client transmet un effacement explicite (`null`), distinct d'un champ non touché, et la fiche est réellement vidée. Les ajouts déjà enregistrés (chaînes vides) gardent leur sens d'origine. |
+| `arbre-groupe-accessible`, `rechargement-et-accessibilite` | Lien d'évitement (23 tabulations avant la première carte), groupe SVG nommé, choix de parenté et de sexe exposés en `role="radio"`, service worker (rechargement hors ligne). |
 
 ## Correctifs du service
 
@@ -56,6 +103,9 @@ script n'est qu'un pont tant que cette source n'est pas versionnée.
 | Clé de limitation | `X-Forwarded-For` était lu sur son **premier** maillon, fourni par le client : la limite de tentatives était contournable. |
 | CSP et en-têtes | Ajout de `object-src 'none'`, `form-action 'none'`, `frame-src 'none'`, `X-Frame-Options`, `Cross-Origin-Opener-Policy`. |
 | `/api/state` | N'expose plus `pinConfigured` ni le nombre d'ajouts en attente. |
+| `/sw.js` | Service worker minimal, réseau d'abord et cache en secours : hors ligne, un rechargement donnait une page blanche alors que l'application ne dépend d'aucune ressource externe. |
+| `GET /api/contributions` | Le **prénom de la personne** qui a proposé un ajout n'est plus public ; il n'est renvoyé qu'à une session déverrouillée. Les ajouts eux-mêmes restent lisibles, l'arbre public en a besoin. |
+| Effacement d'un champ | Un champ de correction peut désormais être **vidé** : `absent` = inchangé, `null` = effacer, texte = renseigner. Une correction entièrement vide reste refusée. |
 
 ## Developpement
 
@@ -74,18 +124,24 @@ modules `node:` et `Bun.serve` n'est appelé que si Bun est présent, ce qui per
 tester le service avec Node.
 
 ```sh
-npm test          # suite du service (79 verifications)
-npm run test:app  # invariants de l'application (32 verifications)
+npm test          # suite du service (96 verifications)
+npm run test:app  # invariants de l'application (46 verifications)
 npm run test:all  # les deux
 ```
 
-`npm test` vérifie le transport (HEAD, 304, brotli, favicon, CSP), la limitation des
-tentatives de code familial (dont le contournement par en-tête falsifié), la
-validation des dates, l'autorisation des contributions, et l'absence d'ajout perdu
-lors d'écritures simultanées.
+`npm test` vérifie le transport (HEAD, 304, brotli, favicon, service worker, CSP), la
+limitation des tentatives de code familial (dont le contournement par en-tête
+falsifié), la validation des dates, l'autorisation des contributions, la sémantique
+d'effacement d'un champ, l'absence de prénom d'auteur pour un visiteur anonyme, et
+l'absence d'ajout perdu lors d'écritures simultanées.
 
-`npm run test:app` lit le HTML de l'application et vérifie que les correctifs
-s'appliquent, puis **les invariants qui ont causé les pannes** sur les données
-réelles du fichier : cohérence des seuils de zoom, et terminaison du calcul de
-nationalité. Ces deux-là échouent même si le code est réécrit autrement, tant que le
-défaut est présent.
+`npm run test:app` lit le HTML de l'application, applique le même traitement que le
+déploiement (retrait des mineurs puis correctifs) et vérifie **les invariants qui ont
+causé les pannes** sur les données réelles du fichier : cohérence des seuils de zoom,
+terminaison du calcul de nationalité, et absence de personne mineure. Ces vérifications
+échouent même si le code est réécrit autrement, tant que le défaut est présent.
+
+Une vérification de bout en bout (vrai serveur + vrai HTML + Chrome) a également été
+exécutée lors de l'audit : 45 contrôles, dont l'affichage des dates en portée branche,
+les commandes mobiles, le piège de focus des modales et l'enregistrement du service
+worker.

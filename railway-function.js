@@ -52,6 +52,34 @@ const jsonHeaders={...base,'Content-Type':'application/json; charset=utf-8','Cac
 
 const FAVICON='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Notre histoire"><rect width="64" height="64" rx="18" fill="#275447"/><text x="32" y="46" font-size="40" text-anchor="middle" fill="#f7e8c9" font-family="Georgia,serif">\u2727</text></svg>';
 
+// Service worker minimal : reseau d'abord, cache en secours. En ligne il ne sert
+// jamais de version perimee ; hors ligne il evite la page blanche, alors que
+// l'application est deja entierement autonome (aucune sous-ressource externe).
+const SW_SOURCE=[
+  "const CACHE='arbre-famille-v1';",
+  "self.addEventListener('install',()=>self.skipWaiting());",
+  "self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));",
+  "self.addEventListener('fetch',e=>{",
+  "  const req=e.request;",
+  "  if(req.method!=='GET')return;",
+  "  const url=new URL(req.url);",
+  "  if(url.origin!==self.location.origin)return;",
+  "  if(url.pathname.indexOf('/api/')===0)return;",
+  "  e.respondWith((async()=>{",
+  "    try{",
+  "      const frais=await fetch(req);",
+  "      if(frais&&frais.ok&&frais.type==='basic'){const c=await caches.open(CACHE);c.put(req,frais.clone());}",
+  "      return frais;",
+  "    }catch(err){",
+  "      const garde=await caches.match(req);",
+  "      if(garde)return garde;",
+  "      if(req.mode==='navigate'){const page=await caches.match('/');if(page)return page;}",
+  "      return new Response('Hors ligne',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}});",
+  "    }",
+  "  })());",
+  "});"
+].join('\n');
+
 /* --- stockage des ajouts de la famille (volume /data) --- */
 function loadDb(){
   try{const db=JSON.parse(readFileSync(STORE,'utf8'));return db&&Array.isArray(db.items)?db:{version:1,items:[]};}
@@ -124,6 +152,12 @@ function tooMany(map,key,max,windowMs){
 function clean(value,max){
   return String(value==null?'':value).replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,max||90);
 }
+// Champ d'une correction : absent (inchange), null (effacer), texte (renseigner).
+function champ(body,key,max){
+  if(!Object.prototype.hasOwnProperty.call(body,key))return undefined;
+  if(body[key]===null)return null;
+  return clean(body[key],max);
+}
 // Validation de calendrier reelle : l'ancienne expression acceptait 1937-13-45.
 function dateOk(value){
   if(!value)return true;
@@ -179,7 +213,20 @@ function appResponse(req,head){
 
 async function contributions(req){
   const ip=ipOf(req);
-  if(req.method==='GET')return json({unlocked:isUnlocked(req),items:loadDb().items});
+  // Le prenom de la personne qui a propose un ajout n'a pas a etre public : il
+  // n'est renvoye qu'a une session deverrouillee. Le reste des ajouts est
+  // necessaire a l'affichage de l'arbre public.
+  if(req.method==='GET'){
+    const unlocked=isUnlocked(req);
+    const items=loadDb().items;
+    if(unlocked)return json({unlocked,items});
+    return json({unlocked,items:items.map(it=>{
+      if(!it||it.author===undefined)return it;
+      const copie={...it};
+      delete copie.author;
+      return copie;
+    })});
+  }
   if(req.method==='POST'){
     if(!isUnlocked(req))return json({error:'code familial requis'},401);
     if(tooMany(writes,ip,40,3600*1000))return json({error:'trop d ajouts recents'},429);
@@ -201,8 +248,15 @@ async function contributions(req){
     if(kind==='edit'){
       item.targetId=clean(body.targetId,60);
       if(!item.targetId)return json({error:'personne cible manquante'},400);
-      if(!item.birthDate&&!item.birthPlace&&!item.deathDate&&!item.deathPlace&&!item.given&&!item.surname&&!item.note)
-        return json({error:'aucune information a enregistrer'},400);
+      // Une correction doit pouvoir VIDER un champ errone. Trois cas sont donc
+      // distingues : champ absent (inchange), null (effacer), texte (renseigner).
+      // Les ajouts deja enregistres portent des chaines vides : leur sens
+      // d'origine est conserve, ils ne declenchent aucun effacement.
+      for(const [key,max] of [['given',60],['surname',60],['birthDate',12],['birthPlace',80],['deathDate',12],['deathPlace',80],['note',400]])
+        item[key]=champ(body,key,max);
+      const utile=['given','surname','birthDate','birthPlace','deathDate','deathPlace','note']
+        .some(key=>item[key]===null||(item[key]!==undefined&&item[key]!==''));
+      if(!utile)return json({error:'aucune information a enregistrer'},400);
     }else{
       const relation=body&&body.relation;
       if(!['child','parent','partner'].includes(relation))return json({error:'relation invalide'},400);
@@ -242,6 +296,10 @@ async function route(req){
 
   if(path==='/favicon.ico'||path==='/favicon.svg')
     return new Response(head?null:FAVICON,{status:200,headers:{...base,'Content-Type':'image/svg+xml','Cache-Control':'public, max-age=604800, immutable'}});
+  // Sans service worker, une coupure reseau suivie d'un rechargement donnait une
+  // page blanche, alors que l'application ne depend d'aucune ressource externe.
+  if(path==='/sw.js')
+    return new Response(head?null:SW_SOURCE,{status:200,headers:{...base,'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-cache','Service-Worker-Allowed':'/'}});
   if(path==='/health')return new Response(head?null:'ok',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}});
   if(path==='/robots.txt')return new Response(head?null:'User-agent: *\nDisallow: /\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 

@@ -13,6 +13,7 @@
 
 import {readFileSync} from 'node:fs';
 import {patchApp, PATCHES} from './patch-app.mjs';
+import {exclureMineurs, estMineur, anneeDeNaissance} from './exclure-mineurs.mjs';
 
 const file = process.argv[2] || 'index.html';
 let source;
@@ -24,10 +25,11 @@ catch {
   process.exit(1);
 }
 
-// On verifie le HTML tel qu'il sera deploye, c'est-a-dire apres application des
-// correctifs. Passer le fichier d'origine ou une version deja corrigee donne donc
-// le meme resultat.
-const result = patchApp(source);
+// On verifie le HTML tel qu'il sera deploye : retrait des mineurs puis
+// application des correctifs. Passer le fichier d'origine ou une version deja
+// corrigee donne le meme resultat.
+const prune = exclureMineurs(source, {actif: true});
+const result = patchApp(prune.html);
 const html = result.html;
 
 let pass = 0, fail = 0;
@@ -37,7 +39,7 @@ const t = (name, ok, detail) => {
 };
 
 console.log('Verification de l\'application : ' + file + ' (' + source.length + ' octets)');
-console.log('HTML evalue apres correctifs : ' + html.length + ' octets\n');
+console.log('HTML evalue apres retrait des mineurs et correctifs : ' + html.length + ' octets\n');
 
 /* ---------- 1. les correctifs sont presents ---------- */
 console.log('1) Correctifs d\'audit (configuration du deploiement)');
@@ -47,6 +49,16 @@ t('les ' + PATCHES.length + ' correctifs s\'appliquent au fichier fourni',
 t('aucun correctif ne s\'applique deux fois',
   result.applied.length + result.skipped.length === PATCHES.length,
   result.applied.length + ' applique(s) + ' + result.skipped.length + ' deja present(s)');
+
+/* ---------- 1b. protection des personnes mineures ---------- */
+console.log('\n1b) Personnes mineures exclues du fichier publie');
+if (prune.erreur) t('donnees FAMILY_DATA exploitables', false, prune.erreur);
+else if (prune.modifie) {
+  prune.exclus.forEach(p => console.log('      retire : ' + p.nom + ' (' + (p.naissance || 'date inconnue') + ')'));
+  t(prune.retirees + ' personne(s) mineure(s) retiree(s)', prune.retirees > 0);
+} else {
+  t('aucune personne mineure a retirer dans ce fichier', true);
+}
 
 /* ---------- 2a. invariant des seuils de zoom ---------- */
 console.log('\n2) Invariant des seuils de zoom (cause du bug des cases vides)');
@@ -107,6 +119,10 @@ t('donnees FAMILY_DATA analysees', !!data, data ? '' : 'illisibles');
 if (data) {
   const people = new Map(data.people.map(p => [p.id, p]));
   console.log('      ' + data.people.length + ' personnes, ' + data.families.length + ' familles');
+  const mineursRestants = data.people.filter(p => estMineur(p, Date.now(), 18));
+  t('aucune personne mineure ne subsiste dans le fichier publie',
+    mineursRestants.length === 0,
+    mineursRestants.map(p => p.name + ' (' + anneeDeNaissance(p) + ')').join(', '));
 
   const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const COUNTRY_KEYS = [['BELGIQUE','BE'],['BELGIUM','BE'],['BELGIE','BE'],['FRANCE','FR'],['FRANCAIS','FR'],['LUXEMBOURG','LU'],['ALLEMAGNE','DE'],['GERMANY','DE'],['DEUTSCHLAND','DE'],['PAYS-BAS','NL'],['NEDERLAND','NL'],['NETHERLANDS','NL'],['HOLLANDE','NL'],['ITALIE','IT'],['ITALY','IT'],['ESPAGNE','ES'],['SPAIN','ES'],['PORTUGAL','PT'],['SUISSE','CH'],['SWITZERLAND','CH'],['ROYAUME-UNI','GB'],['UNITED KINGDOM','GB'],['ANGLETERRE','GB'],['ENGLAND','GB'],['IRLANDE','IE'],['IRELAND','IE'],['AUTRICHE','AT'],['AUSTRIA','AT'],['POLOGNE','PL'],['POLAND','PL'],['ROUMANIE','RO'],['ROMANIA','RO'],['TURQUIE','TR'],['TURKEY','TR'],['MAROC','MA'],['MOROCCO','MA'],['ALGERIE','DZ'],['ALGERIA','DZ'],['TUNISIE','TN'],['TUNISIA','TN'],['CONGO','CD'],['CANADA','CA'],['ETATS-UNIS','US'],['UNITED STATES','US'],['SENEGAL','SN'],['MONACO','MC']];
@@ -211,6 +227,22 @@ t('focus restaure apres un re-rendu de l\'arbre', html.includes("getElementById(
 t('rechargement automatique conditionnel (plus de perte d\'etat sur onglet actif)', html.includes('Date.now()-last<IDLE'));
 t('contrastes AA : les gris secondaires sont remplaces', html.includes('color:#5c6a63'));
 t('favicon declare dans le document', html.includes('rel="icon" href="/favicon.svg"'));
+t('espacement entre generations reduit a 200', html.includes('nodesep:52,ranksep:200'));
+t('le titre et le compteur reviennent sur telephone',
+  /@media\(max-width:850px\)\{[\s\S]{0,400}\.heading\{display:flex!important/.test(html));
+t('la legende et la case « Afficher les fratries » reviennent sur telephone',
+  /@media\(max-width:850px\)\{[\s\S]{0,900}\.legend\{display:flex!important/.test(html));
+t('le recentrage revient sur telephone', html.includes('#center{display:inline-flex!important'));
+t('la recherche annonce le nombre total au-dela de 25 resultats',
+  html.includes("found.length>25?'<p class=\"note\">'+found.length"));
+t('lien d\'evitement avant la premiere carte', html.includes("a.className='lien-evitement'"));
+t('les choix de parente et de sexe exposent leur etat (role radio)',
+  html.includes("g.setAttribute('role','radiogroup')") && html.includes("b.setAttribute('aria-checked'"));
+t('le groupe de l\'arbre est nomme pour un lecteur d\'ecran', html.includes('aria-label="Personnes de l\'arbre familial"'));
+t('service worker enregistre (rechargement hors ligne)', html.includes("navigator.serviceWorker.register('/sw.js')"));
+t('compteur de portee aligne sur ce qui est affiche', html.includes("b.dataset.origine===undefined"));
+t('effacement d\'un champ : le client transmet null', html.includes("payload[key]=after[key]===''?null:after[key]"));
+t('effacement d\'un champ : la fiche est reellement videe', html.includes("if(it.given===null)target.givenName='';"));
 
 console.log('\n' + pass + ' reussite(s), ' + fail + ' echec(s)');
 process.exit(fail ? 1 : 0);
