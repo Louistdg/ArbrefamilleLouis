@@ -2,6 +2,7 @@ import {readFileSync, writeFileSync} from 'node:fs';
 import {gzipSync} from 'node:zlib';
 import {patchApp, report} from './patch-app.mjs';
 import {exclureMineurs} from './exclure-mineurs.mjs';
+import {masquerVivants} from './masquer-vivants.mjs';
 
 // Produit localement les variables APP_CHUNK_* attendues par la fonction Railway.
 // Ne pas ajouter au dépôt Git le fichier .env.railway généré.
@@ -41,6 +42,25 @@ let html = readFileSync(input, 'utf8');
     html = r.html;
   } else if (!flags.has('--garder-mineurs')) {
     console.log('Aucune personne mineure a retirer.');
+  }
+}
+
+// Les personnes vivantes gardent leur annee de naissance, mais perdent la date
+// exacte et le lieu : c'est le couple le plus identifiant du fichier.
+// --garder-vivants desactive ce masquage.
+{
+  const r = masquerVivants(html, {actif: !flags.has('--garder-vivants')});
+  if (r.erreur) {
+    console.error('ECHEC : ' + r.erreur);
+    process.exit(1);
+  }
+  if (r.modifie) {
+    console.log('Personnes vivantes : date exacte et lieu retires (' + r.masques.length + ')');
+    r.masques.slice(0, 40).forEach(p => console.log('  - ' + p.nom));
+    if (r.masques.length > 40) console.log('  ... et ' + (r.masques.length - 40) + ' autre(s)');
+    html = r.html;
+  } else if (!flags.has('--garder-vivants')) {
+    console.log('Aucune personne vivante a masquer.');
   }
 }
 

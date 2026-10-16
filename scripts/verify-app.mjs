@@ -14,6 +14,7 @@
 import {readFileSync} from 'node:fs';
 import {patchApp, PATCHES} from './patch-app.mjs';
 import {exclureMineurs, estMineur, anneeDeNaissance} from './exclure-mineurs.mjs';
+import {masquerVivants, estPlausiblementVivant} from './masquer-vivants.mjs';
 
 const file = process.argv[2] || 'index.html';
 let source;
@@ -29,7 +30,8 @@ catch {
 // application des correctifs. Passer le fichier d'origine ou une version deja
 // corrigee donne le meme resultat.
 const prune = exclureMineurs(source, {actif: true});
-const result = patchApp(prune.html);
+const masque = masquerVivants(prune.html, {actif: true});
+const result = patchApp(masque.html);
 const html = result.html;
 
 let pass = 0, fail = 0;
@@ -123,6 +125,18 @@ if (data) {
   t('aucune personne mineure ne subsiste dans le fichier publie',
     mineursRestants.length === 0,
     mineursRestants.map(p => p.name + ' (' + anneeDeNaissance(p) + ')').join(', '));
+
+  // Le couple date exacte + lieu de naissance est la donnee la plus identifiante.
+  const vivants = data.people.filter(p => estPlausiblementVivant(p, Date.now()));
+  const avecLieu = vivants.filter(p => p.birth && p.birth.place);
+  const avecJour = vivants.filter(p => p.birth && /[A-Z]{3}/.test(String(p.birth.date || '')));
+  const lieuxEvenements = vivants.filter(p => (p.events || []).some(e => e && e.place));
+  console.log('      ' + vivants.length + ' personne(s) plausiblement vivante(s)');
+  t('aucun lieu de naissance pour une personne vivante', avecLieu.length === 0, avecLieu.map(p => p.name).join(', '));
+  t('aucun jour ni mois de naissance pour une personne vivante', avecJour.length === 0, avecJour.map(p => p.name + ' ' + p.birth.date).join(', '));
+  t('aucun lieu d\'evenement pour une personne vivante', lieuxEvenements.length === 0, lieuxEvenements.map(p => p.name).join(', '));
+  t('l\'annee de naissance est conservee pour les personnes vivantes',
+    vivants.filter(p => p.birth && p.birth.date && /^[0-9]{4}$/.test(String(p.birth.date).trim())).length > 0);
 
   const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const COUNTRY_KEYS = [['BELGIQUE','BE'],['BELGIUM','BE'],['BELGIE','BE'],['FRANCE','FR'],['FRANCAIS','FR'],['LUXEMBOURG','LU'],['ALLEMAGNE','DE'],['GERMANY','DE'],['DEUTSCHLAND','DE'],['PAYS-BAS','NL'],['NEDERLAND','NL'],['NETHERLANDS','NL'],['HOLLANDE','NL'],['ITALIE','IT'],['ITALY','IT'],['ESPAGNE','ES'],['SPAIN','ES'],['PORTUGAL','PT'],['SUISSE','CH'],['SWITZERLAND','CH'],['ROYAUME-UNI','GB'],['UNITED KINGDOM','GB'],['ANGLETERRE','GB'],['ENGLAND','GB'],['IRLANDE','IE'],['IRELAND','IE'],['AUTRICHE','AT'],['AUSTRIA','AT'],['POLOGNE','PL'],['POLAND','PL'],['ROUMANIE','RO'],['ROMANIA','RO'],['TURQUIE','TR'],['TURKEY','TR'],['MAROC','MA'],['MOROCCO','MA'],['ALGERIE','DZ'],['ALGERIA','DZ'],['TUNISIE','TN'],['TUNISIA','TN'],['CONGO','CD'],['CANADA','CA'],['ETATS-UNIS','US'],['UNITED STATES','US'],['SENEGAL','SN'],['MONACO','MC']];
@@ -243,6 +257,33 @@ t('service worker enregistre (rechargement hors ligne)', html.includes("navigato
 t('compteur de portee aligne sur ce qui est affiche', html.includes("b.dataset.origine===undefined"));
 t('effacement d\'un champ : le client transmet null', html.includes("payload[key]=after[key]===''?null:after[key]"));
 t('effacement d\'un champ : la fiche est reellement videe', html.includes("if(it.given===null)target.givenName='';"));
+
+console.log('\n6) Changements visuels');
+t('zoom semantique : les trois niveaux de texte sont generes',
+  html.includes('class="tinit"') && html.includes('class="tshort"') && html.includes('class="tyears"'));
+t('zoom semantique : le nom court et les annees sont calcules',
+  html.includes('function raccourci(') && html.includes('function annees('));
+t('zoom semantique : les initiales sont contre-ecrasees selon l\'echelle',
+  html.includes("setProperty('--ls',ls)") && html.includes('calc(14px*var(--ls,1))'));
+t('zoom semantique : aucun palier ne masque tout le texte',
+  !html.includes('#tree[data-zoom="far"] .person text{display:none}')
+  && html.includes('#tree[data-zoom="near"] .tinit'));
+t('nouvelle carte : filet de branche et glyphe de sexe', html.includes('class="accent"') && html.includes('class="sexmark"'));
+t('nouvelle carte : nom agrandi et interlignes ajustes',
+  html.includes('font-size="16.5"') && html.includes('y+=20;}y+=5;'));
+t('nouvelle carte : dimensions augmentees dans les deux mises en page',
+  html.includes('width:250,height:Math.max(124,40+') && html.includes('width:250,height:Math.max(124,40+lines.name.length*20'));
+t('fluidite : fondu enchaine et calque retires ensuite',
+  html.includes('function fonduAvant()') && html.includes('.arbre-fondu{position:absolute'));
+t('fluidite : pastille d\'attente creee hors du canvas (que le rendu reecrit)',
+  html.includes("document.querySelector('.main')") && html.includes('function indicateurCalcul(on)'));
+t('fluidite : les grosses vues laissent le navigateur peindre avant de calculer',
+  html.includes('renduGeneration') && html.includes('selection().size<=90'));
+t('fluidite : mise en page memorisee et invalidee sur contribution',
+  html.includes('function buildGraphMemo(') && html.includes('function applyContributions(items){viderMemoireGraphes();'));
+t('accessibilite : ordre du DOM aligne sur l\'ordre visuel',
+  html.includes('[...g.nodes()].sort((a,b)=>{const A=g.node(a),B=g.node(b);return (A.y-B.y)||(A.x-B.x);})'));
+t('mobile : l\'export SVG est restaure', html.includes('#export{display:inline-flex!important'));
 
 console.log('\n' + pass + ' reussite(s), ' + fail + ' echec(s)');
 process.exit(fail ? 1 : 0);

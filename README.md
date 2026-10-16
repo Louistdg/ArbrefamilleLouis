@@ -49,16 +49,49 @@ node -e "const {readFileSync}=require('fs');const s=readFileSync('railway-functi
 #    serviceInstanceUpdate, puis serviceInstanceRedeploy)
 ```
 
-## Protection des personnes mineures
+## Protection des personnes mineures et vivantes
 
-`scripts/prepare-bundle.mjs` retire du fichier publié toute personne **vivante et
-encore mineure** : son nom, sa date et son lieu de naissance n'ont pas à figurer sur
-une page publique. Le retrait est calculé à partir de la date complète quand elle est
-connue (comparer les seules années laisserait passer un mineur dont l'anniversaire
-n'est pas encore arrivé), et les compteurs de la colonne latérale sont nettoyés en
-conséquence. Chaque personne retirée est nommée dans la sortie du script.
+Deux traitements sont appliqués au fichier publié avant les correctifs.
 
+**Mineurs** (`scripts/exclure-mineurs.mjs`) : toute personne vivante encore mineure
+est retirée. Le calcul utilise la date complète quand elle est connue — comparer les
+seules années laisserait passer un mineur dont l'anniversaire n'est pas encore arrivé.
 `--garder-mineurs` désactive ce retrait.
+
+**Personnes vivantes** (`scripts/masquer-vivants.mjs`) : elles conservent leur année de
+naissance, mais perdent la **date exacte** et le **lieu**. Le couple date exacte + lieu
+de naissance est la donnée la plus identifiante du fichier ; l'année suffit à l'arbre et
+au calcul des âges. Les lieux d'événements (mariage, résidence) sont retirés aussi.
+`--garder-vivants` désactive ce masquage.
+
+Un export GEDCOM ne renseigne pas toujours le décès : sans garde-fou, des personnes nées
+en 1808 seraient considérées comme vivantes. Seules sont donc masquées les personnes
+plausiblement en vie (< 110 ans).
+
+## Changements visuels : lisibilité et fluidité
+
+| Changement | Ce qui a été fait | Effet mesuré |
+|---|---|---|
+| **1. Zoom sémantique à trois niveaux** | Chaque carte porte désormais trois textes : la carte complète, un nom court avec les années, et les initiales. Un seul est visible selon le niveau de zoom, et les initiales sont contre-écrasées selon l'échelle. Plus aucun palier où le texte disparaît | Noms 12,4 px de près, nom court **13,5 px** au milieu, initiales **14 px** de loin (avant : 0 px) |
+| **2. Nouvelle carte** | Filet vertical aux couleurs de la lignée, sexe indiqué par un glyphe et non plus par la seule couleur, nom agrandi à 16,5 px, dates à 13 px, cartes 250 × 124, cadres et ombres plus nets | Cartes plus aérées, deux canaux d'information indépendants |
+| **3. Fluidité** | Fondu enchaîné entre deux vues, mise en page dagre **mémorisée**, et pastille d'attente pendant les calculs lourds pour que l'attente soit visible plutôt que figée | Retour à une vue déjà calculée : **567 ms → 210 ms** |
+
+L'inertie au glissement et les animations de zoom existaient déjà et ont été conservées.
+Le fondu et les animations respectent le réglage système « mouvement réduit ».
+
+## Récupérer la source de l'application
+
+Le HTML n'existe que dans les variables Railway. Pour le récupérer et le décomposer en
+arborescence éditable :
+
+```sh
+node scripts/extraire-app.mjs source-app
+```
+
+Cela produit `source-app/index.html` (le fichier brut), les feuilles de style et les
+blocs de script séparés dans l'ordre du document, et `source-app/donnees/famille.json`.
+**Cette extraction contient des données personnelles : elle doit rester dans un dépôt
+privé.**
 
 ## Correctifs d'audit de l'application
 
@@ -125,7 +158,7 @@ tester le service avec Node.
 
 ```sh
 npm test          # suite du service (96 verifications)
-npm run test:app  # invariants de l'application (46 verifications)
+npm run test:app  # invariants de l'application (63 verifications)
 npm run test:all  # les deux
 ```
 
@@ -136,12 +169,14 @@ d'effacement d'un champ, l'absence de prénom d'auteur pour un visiteur anonyme,
 l'absence d'ajout perdu lors d'écritures simultanées.
 
 `npm run test:app` lit le HTML de l'application, applique le même traitement que le
-déploiement (retrait des mineurs puis correctifs) et vérifie **les invariants qui ont
+déploiement (retrait des mineurs, masquage des vivants, puis correctifs) et vérifie **les invariants qui ont
 causé les pannes** sur les données réelles du fichier : cohérence des seuils de zoom,
-terminaison du calcul de nationalité, et absence de personne mineure. Ces vérifications
+terminaison du calcul de nationalité, absence de personne mineure, et absence de date
+exacte ou de lieu pour une personne vivante. Ces vérifications
 échouent même si le code est réécrit autrement, tant que le défaut est présent.
 
 Une vérification de bout en bout (vrai serveur + vrai HTML + Chrome) a également été
 exécutée lors de l'audit : 45 contrôles, dont l'affichage des dates en portée branche,
 les commandes mobiles, le piège de focus des modales et l'enregistrement du service
-worker.
+worker. La lisibilité des trois niveaux de zoom, la nouvelle carte et la fluidité font
+l'objet de 28 contrôles supplémentaires (`audit-site/test-visuel.mjs`).
