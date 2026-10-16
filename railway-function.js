@@ -1,5 +1,5 @@
-import {gunzipSync} from 'node:zlib';
-import {createHmac,randomBytes,scryptSync,timingSafeEqual,randomUUID} from 'node:crypto';
+import {gunzipSync,brotliCompressSync,constants} from 'node:zlib';
+import {createHmac,createHash,randomBytes,scryptSync,timingSafeEqual,randomUUID} from 'node:crypto';
 import {mkdirSync,readFileSync,writeFileSync,renameSync} from 'node:fs';
 
 const env=globalThis.Bun?.env||process.env;
@@ -9,16 +9,48 @@ const PIN_HASH=env.EDIT_PIN_HASH||'';
 const PIN_SALT=env.EDIT_PIN_SALT||'';
 const SECRET=env.EDIT_SESSION_SECRET||'';
 const SECURE=env.LOCAL_TEST==='1'?'':'; Secure';
+const PRE_ENCODED=env.APP_PRE_ENCODED!=='0';
+const SESSION_MS=12*3600*1000;
 
 /* --- page publique, servie comme avant depuis APP_CHUNK_* --- */
 let compressed='';
 for(let i=0;i<Number(env.APP_CHUNK_COUNT||0);i++)compressed+=env['APP_CHUNK_'+i]||'';
 if(!compressed)throw new Error('Application bundle missing');
-const app=gunzipSync(Buffer.from(compressed,'base64')).toString('utf8');
+
+// Le bundle est stocke deja compresse en gzip+base64 dans les variables Railway.
+// On conserve les octets gzip tels quels (encodage servi sans recalcul) et on
+// derive une variante brotli une seule fois au demarrage : environ -33 % sur le
+// fil par rapport a gzip, et plus aucune recompression a la volee par la plateforme.
+const gzipBytes=Buffer.from(compressed,'base64');
+const appBytes=gunzipSync(gzipBytes);
+let brotliBytes=null;
+if(PRE_ENCODED){
+  try{
+    brotliBytes=brotliCompressSync(appBytes,{params:{
+      [constants.BROTLI_PARAM_QUALITY]:9,
+      [constants.BROTLI_PARAM_SIZE_HINT]:appBytes.length
+    }});
+  }catch(error){
+    console.error('brotli indisponible, repli sur gzip',error);
+  }
+}
+
+// Un validateur distinct par representation (RFC 9110) : melanger les encodages
+// derriere un meme ETag ferait servir la mauvaise representation depuis un cache.
+const hash=createHash('sha256').update(appBytes).digest('base64url').slice(0,32);
+const TAGS={identity:'W/"'+hash+'-id"',gzip:'W/"'+hash+'-gz"',br:'W/"'+hash+'-br"'};
+const BUILD_TIME=new Date();
 
 const base={'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow, noarchive','Permissions-Policy':'camera=(), microphone=(), geolocation=()'};
-const headers={...base,'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"};
+const csp="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+// no-cache (et non no-store) : le navigateur conserve la page mais revalide
+// systematiquement. Le document est identique pour tout le monde et porte un
+// ETag, donc une relecture coute environ 200 octets au lieu de 157 Ko.
+const appCache='no-cache, must-revalidate';
+const headers={...base,'Content-Type':'text/html; charset=utf-8','Content-Language':'fr','Cache-Control':appCache,'Content-Security-Policy':csp,'X-Frame-Options':'DENY','Cross-Origin-Opener-Policy':'same-origin'};
 const jsonHeaders={...base,'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'};
+
+const FAVICON='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Notre histoire"><rect width="64" height="64" rx="18" fill="#275447"/><text x="32" y="46" font-size="40" text-anchor="middle" fill="#f7e8c9" font-family="Georgia,serif">\u2727</text></svg>';
 
 /* --- stockage des ajouts de la famille (volume /data) --- */
 function loadDb(){
@@ -30,10 +62,20 @@ function saveDb(db){
   catch(error){console.error('ecriture impossible',error);return false;}
 }
 
+// L'ecriture est un cycle lire-modifier-ecrire : deux contributions simultanees
+// pourraient s'ecraser mutuellement. Une file d'attente en memoire suffit, le
+// service tournant dans un seul processus.
+let ioChain=Promise.resolve();
+function withWriteLock(fn){
+  const run=ioChain.then(fn,fn);
+  ioChain=run.then(()=>undefined,()=>undefined);
+  return run;
+}
+
 /* --- session signee apres saisie du code familial --- */
 function sign(value){return createHmac('sha256',SECRET).update(value).digest('base64url');}
 function newSession(){
-  const payload=Buffer.from(JSON.stringify({exp:Date.now()+12*3600*1000,n:randomBytes(8).toString('hex')})).toString('base64url');
+  const payload=Buffer.from(JSON.stringify({exp:Date.now()+SESSION_MS,n:randomBytes(8).toString('hex')})).toString('base64url');
   return payload+'.'+sign(payload);
 }
 function isUnlocked(req){
@@ -60,8 +102,15 @@ function pinOk(pin){
 
 /* --- limitation de debit --- */
 const attempts=new Map(),writes=new Map();
+// Le premier maillon de X-Forwarded-For est fourni par le client : s'y fier
+// laisserait un attaquant choisir sa propre cle de limitation. On prefere
+// l'en-tete pose par la plateforme, sinon le dernier maillon (ajoute par le
+// proxy le plus proche de l'application).
 function ipOf(req){
-  return String(req.headers.get('x-railway-client-ip')||req.headers.get('x-forwarded-for')||'unknown').split(',')[0].trim();
+  const direct=req.headers.get('x-railway-client-ip');
+  if(direct)return direct.split(',')[0].trim();
+  const parts=(req.headers.get('x-forwarded-for')||'').split(',').map(s=>s.trim()).filter(Boolean);
+  return parts.length?parts[parts.length-1]:'unknown';
 }
 function tooMany(map,key,max,windowMs){
   const now=Date.now();
@@ -75,18 +124,62 @@ function tooMany(map,key,max,windowMs){
 function clean(value,max){
   return String(value==null?'':value).replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,max||90);
 }
+// Validation de calendrier reelle : l'ancienne expression acceptait 1937-13-45.
 function dateOk(value){
   if(!value)return true;
-  return /^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$/.test(value)||/^[0-9]{3,4}$/.test(value);
+  if(/^[0-9]{3,4}$/.test(value)){const y=Number(value);return y>=1000&&y<=2100;}
+  const m=/^([0-9]{4})(?:-([0-9]{2})(?:-([0-9]{2}))?)?$/.exec(value);
+  if(!m)return false;
+  const year=Number(m[1]);
+  if(year<1000||year>2100)return false;
+  if(m[2]===undefined)return true;
+  const month=Number(m[2]);
+  if(month<1||month>12)return false;
+  if(m[3]===undefined)return true;
+  const day=Number(m[3]);
+  const last=new Date(Date.UTC(year,month,0)).getUTCDate();
+  return day>=1&&day<=last;
 }
 function json(body,status,extra){
   return new Response(JSON.stringify(body),{status:status||200,headers:{...jsonHeaders,...(extra||{})}});
 }
 
+function pickEncoding(req){
+  if(!PRE_ENCODED)return {body:appBytes,encoding:'',tag:TAGS.identity};
+  const raw=(req.headers.get('accept-encoding')||'').toLowerCase();
+  const wanted=new Map();
+  for(const part of raw.split(',')){
+    const [name,...params]=part.trim().split(';');
+    if(!name)continue;
+    const q=params.map(p=>p.trim()).find(p=>p.startsWith('q='));
+    wanted.set(name.trim(),q?Number(q.slice(2)):1);
+  }
+  const allowed=n=>{
+    if(wanted.has(n))return wanted.get(n)>0;
+    if(wanted.has('*'))return wanted.get('*')>0;
+    return false;
+  };
+  if(brotliBytes&&allowed('br'))return {body:brotliBytes,encoding:'br',tag:TAGS.br};
+  if(allowed('gzip'))return {body:gzipBytes,encoding:'gzip',tag:TAGS.gzip};
+  return {body:appBytes,encoding:'',tag:TAGS.identity};
+}
+
+function appResponse(req,head){
+  const {body,encoding,tag}=pickEncoding(req);
+  const out={...headers,'ETag':tag,'Vary':'Accept-Encoding','Last-Modified':BUILD_TIME.toUTCString(),'Content-Length':String(body.length)};
+  if(encoding)out['Content-Encoding']=encoding;
+  const inm=req.headers.get('if-none-match');
+  if(inm&&(inm.trim()==='*'||inm.split(',').some(t=>t.trim()===tag))){
+    const fresh={...base,'ETag':tag,'Vary':'Accept-Encoding','Cache-Control':appCache};
+    if(encoding)fresh['Content-Encoding']=encoding;
+    return new Response(null,{status:304,headers:fresh});
+  }
+  return new Response(head?null:body,{status:200,headers:out});
+}
+
 async function contributions(req){
   const ip=ipOf(req);
-  const db=loadDb();
-  if(req.method==='GET')return json({unlocked:isUnlocked(req),items:db.items});
+  if(req.method==='GET')return json({unlocked:isUnlocked(req),items:loadDb().items});
   if(req.method==='POST'){
     if(!isUnlocked(req))return json({error:'code familial requis'},401);
     if(tooMany(writes,ip,40,3600*1000))return json({error:'trop d ajouts recents'},429);
@@ -118,33 +211,45 @@ async function contributions(req){
       if(!item.anchorId||(!item.given&&!item.surname))return json({error:'nom requis'},400);
     }
     if(!dateOk(item.birthDate)||!dateOk(item.deathDate))return json({error:'date invalide'},400);
-    if(db.items.length>=3000)return json({error:'limite atteinte'},400);
-    db.items.push(item);
-    if(!saveDb(db))return json({error:'enregistrement impossible'},500);
-    return json({ok:true,item:item});
+    // Lecture et ecriture dans la meme section critique : plus d'ajout perdu.
+    return await withWriteLock(()=>{
+      const db=loadDb();
+      if(db.items.length>=3000)return json({error:'limite atteinte'},400);
+      db.items.push(item);
+      if(!saveDb(db))return json({error:'enregistrement impossible'},500);
+      return json({ok:true,item:item});
+    });
   }
   if(req.method==='DELETE'){
     if(!isUnlocked(req))return json({error:'code familial requis'},401);
     const id=new URL(req.url).searchParams.get('id')||'';
-    const before=db.items.length;
-    db.items=db.items.filter(it=>it.id!==id);
-    if(db.items.length===before)return json({error:'ajout introuvable'},404);
-    if(!saveDb(db))return json({error:'enregistrement impossible'},500);
-    return json({ok:true});
+    return await withWriteLock(()=>{
+      const db=loadDb();
+      const before=db.items.length;
+      db.items=db.items.filter(it=>it.id!==id);
+      if(db.items.length===before)return json({error:'ajout introuvable'},404);
+      if(!saveDb(db))return json({error:'enregistrement impossible'},500);
+      return json({ok:true});
+    });
   }
   return json({error:'methode non supportee'},405);
 }
 
-export async function handle(req){
-  const url=new URL(req.url),path=url.pathname;
+async function route(req){
+  const url=new URL(req.url),path=url.pathname,method=req.method;
+  const head=method==='HEAD';
+  const get=head||method==='GET';
 
-  if(path==='/favicon.ico')return new Response(null,{status:204});
-  if(path==='/health')return new Response('ok',{headers:{'Cache-Control':'no-store'}});
-  if(path==='/robots.txt')return new Response('User-agent: *\nDisallow: /\n',{headers:{'Content-Type':'text/plain'}});
+  if(path==='/favicon.ico'||path==='/favicon.svg')
+    return new Response(head?null:FAVICON,{status:200,headers:{...base,'Content-Type':'image/svg+xml','Cache-Control':'public, max-age=604800, immutable'}});
+  if(path==='/health')return new Response(head?null:'ok',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}});
+  if(path==='/robots.txt')return new Response(head?null:'User-agent: *\nDisallow: /\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600'}});
 
-  if(path==='/api/state')return json({unlocked:isUnlocked(req),pinConfigured:!!(PIN_HASH&&PIN_SALT),count:loadDb().items.length});
+  // L'application ne consulte pas cette route : on n'expose plus l'existence du
+  // code familial ni le nombre d'ajouts en attente.
+  if(path==='/api/state')return json({unlocked:isUnlocked(req)});
   if(path==='/api/lock')return json({ok:true},200,{'Set-Cookie':'family_edit=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+SECURE});
-  if(path==='/api/unlock'&&req.method==='POST'){
+  if(path==='/api/unlock'&&method==='POST'){
     const ip=ipOf(req);
     if(tooMany(attempts,ip,8,15*60*1000))return json({error:'trop de tentatives, reessaie dans quinze minutes'},429);
     let body=null;
@@ -158,7 +263,18 @@ export async function handle(req){
     return json({ok:true},200,{'Set-Cookie':'family_edit='+newSession()+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200'+SECURE});
   }
   if(path==='/api/contributions')return contributions(req);
-  if(req.method==='GET'&&(path==='/'||path==='/app'))return new Response(app,{headers});
-  return new Response('Page introuvable',{status:404,headers:{'Cache-Control':'no-store'}});
+  // /index.html etait renvoye en 404 alors que le document existe ; GET et HEAD
+  // sont desormais traites (les sondes de disponibilite utilisent HEAD).
+  if(get&&(path==='/'||path==='/app'||path==='/index.html'))return appResponse(req,head);
+  return new Response(head?null:'Page introuvable',{status:404,headers:{...base,'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}});
+}
+
+export async function handle(req){
+  try{
+    return await route(req);
+  }catch(error){
+    console.error('requete en echec',error);
+    return new Response(JSON.stringify({error:'erreur interne'}),{status:500,headers:jsonHeaders});
+  }
 }
 if(globalThis.Bun)Bun.serve({port:Number(env.PORT||3000),fetch:handle});
