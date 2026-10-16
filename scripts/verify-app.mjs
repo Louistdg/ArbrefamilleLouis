@@ -285,5 +285,27 @@ t('accessibilite : ordre du DOM aligne sur l\'ordre visuel',
   html.includes('[...g.nodes()].sort((a,b)=>{const A=g.node(a),B=g.node(b);return (A.y-B.y)||(A.x-B.x);})'));
 t('mobile : l\'export SVG est restaure', html.includes('#export{display:inline-flex!important'));
 
+console.log('\n7) Adapte a un public age');
+t('le titre et les tuiles d\'information ne sont plus masques en permanence',
+  html.includes('.heading{display:flex!important}') && html.includes('.metrics{display:flex!important}'));
+t('les bandes de generation sont dessinees et nommees',
+  html.includes('function bandesGeneration(') && html.includes('class="etiquette-generation"')
+  && html.includes('out+=bandesGeneration(g);'));
+t('les niveaux de generation sont nommes en clair',
+  /Parents/.test(html) && /Grands-parents/.test(html));
+t('le choix de taille de texte existe et est conserve',
+  html.includes('data-confort="1.3"') && html.includes("localStorage.setItem('arbre-confort'"));
+t('le confort agrandit l\'ouverture des vues', html.includes('Math.max(ratio*confortLecture,threshold)'));
+t('un panneau d\'aide explique l\'usage en phrases simples',
+  html.includes("aide.id='aide'") && html.includes('Comment utiliser l') && html.includes('aide-liste'));
+t('l\'aide s\'ouvre seule a la premiere visite puis se retient',
+  html.includes("localStorage.getItem('arbre-aide-vue')"));
+t('un bandeau de reperes reste visible',
+  html.includes("r.innerHTML='<b>Glissez</b>"));
+t('les boutons d\'ouverture sont plus grands (47 unites)',
+  html.includes('width="47" height="47"'));
+t('les fonctions utiles sont exposees entre blocs de script',
+  html.includes('window.familyConfort=appliquerConfort') && html.includes('window.familyRender=render'));
+
 console.log('\n' + pass + ' reussite(s), ' + fail + ' echec(s)');
 process.exit(fail ? 1 : 0);
