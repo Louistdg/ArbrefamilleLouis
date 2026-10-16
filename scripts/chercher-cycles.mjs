@@ -41,27 +41,33 @@ console.log('=== CYCLES DE PARENTE ===');
 const cAvant = chercherCycles(avant, 'donnees actuelles (417)');
 const cApres = chercherCycles(D, 'donnees fusionnees (469)');
 
-console.log('\n=== CYCLES DE PARENTE LARGES (parents ET enfants) ===');
-const chercherCyclesLarges = (donnees, etiquette) => {
+console.log('\n=== REVISITES PAR ALLIANCE (information, pas des erreurs) ===');
+// Attention : dans un arbre familial, presque tout le monde est « rejoignable »
+// par deux chemins des que deux familles se sont alliees deux fois (deux freres
+// epousant deux soeurs, un cousinage). Ce n'est PAS un cycle : suivre les liens
+// dans les deux sens fait apparaitre une fausse boucle pour chaque filiation.
+// Le vrai controle — une personne qui serait son propre ancetre — est fait par
+// scripts/valider-donnees.mjs, en ne suivant que les liens vers les parents.
+const chercherRevisites = (donnees) => {
   const voisins = new Map();
-  for (const x of donnees.people) voisins.set(x.id, [...new Set([...(x.parents || []), ...(x.children || [])])]);
-  const couleur = new Map(), cycles = [];
-  const visite = (id, chemin) => {
-    const c = couleur.get(id);
-    if (c === 1) { cycles.push([...chemin.slice(chemin.indexOf(id)), id]); return; }
-    if (c === 2) return;
-    couleur.set(id, 1);
-    chemin.push(id);
-    for (const a of voisins.get(id) || []) visite(a, chemin);
-    chemin.pop();
-    couleur.set(id, 2);
-  };
-  for (const id of voisins.keys()) if (!couleur.has(id)) visite(id, []);
-  console.log('  ' + etiquette + ' : ' + cycles.length + ' cycle(s)');
-  cycles.slice(0, 8).forEach(cy => console.log('    ' + cy.map(nom).join('  ->  ')));
-  return cycles;
+  for (const x of donnees.people) voisins.set(x.id, [...new Set([...(x.parents || []), ...(x.children || []), ...(x.partners || [])])]);
+  let paires = 0;
+  const vus = new Set();
+  for (const x of donnees.people) {
+    for (const a of x.parents || []) for (const b of x.parents || []) {
+      if (a >= b) continue;
+      const k = a + '|' + b;
+      if (vus.has(k)) continue;
+      vus.add(k);
+      // deux parents qui sont eux-memes parents par ailleurs : alliance double
+      const parentsDeA = new Set(donnees.people.find(y => y.id === a)?.parents || []);
+      if ((donnees.people.find(y => y.id === b)?.children || []).length > 1) paires++;
+    }
+  }
+  console.log('  ' + donnees.people.length + ' personnes, ' + paires + ' situation(s) d\'alliance double');
+  return paires;
 };
-chercherCyclesLarges(D, 'fusionnees');
+chercherRevisites(D);
 
 console.log('\n=== PROFONDEUR MAXIMALE DE LA LIGNEE ===');
 const parentDe = new Map(D.people.map(x => [x.id, x.parents || []]));

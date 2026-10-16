@@ -9,6 +9,10 @@
     "test:app": "node scripts/verify-app.mjs index.html",
     "test:all": "npm run test:app && npm test",
     "patch": "node scripts/patch-app.mjs index.html index.corrige.html",
-    "bundle": "node scripts/prepare-bundle.mjs index.html .env.railway"
+    "bundle": "node scripts/prepare-bundle.mjs index.html .env.railway",
+    "donnees:fusionner": "node scripts/fusionner-gedcom.mjs",
+    "donnees:valider": "node scripts/valider-donnees.mjs",
+    "donnees:verifier": "node scripts/verifier-conversion.mjs",
+    "donnees:injecter": "node scripts/injecter-donnees.mjs index.html donnees/famille.json index.data.html"
   }
 }

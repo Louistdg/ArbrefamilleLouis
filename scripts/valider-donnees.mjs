@@ -68,6 +68,69 @@ t('la branche correspond a la liste des branches',
   D.people.filter(x => x.branch !== (!x.branches.length ? 'hors_branches' : x.branches.length > 1 ? 'commun' : x.branches[0])).slice(0, 3).map(x => x.name + ' ' + x.branch + ' ' + JSON.stringify(x.branches)));
 t('chaque personne a un nom', D.people.every(x => x.name && x.name.trim()));
 
+console.log('\n=== CYCLES ET ORPHELINS ===');
+
+// Cycle de parente au sens strict : une personne qui serait son propre ancetre.
+// On ne suit que les liens vers les parents : parcourir parents ET enfants
+// ferait apparaitre une fausse boucle pour chaque simple lien de filiation.
+const etatCycle = new Map();
+const cycles = [];
+const remonter = (id, chemin) => {
+  const e = etatCycle.get(id);
+  if (e === 1) { cycles.push([...chemin.slice(chemin.indexOf(id)), id]); return; }
+  if (e === 2) return;
+  etatCycle.set(id, 1);
+  chemin.push(id);
+  for (const a of parId.get(id)?.parents || []) remonter(a, chemin);
+  chemin.pop();
+  etatCycle.set(id, 2);
+};
+for (const x of D.people) if (!etatCycle.has(x.id)) remonter(x.id, []);
+t('aucune personne n\'est son propre ancetre', cycles.length === 0,
+  cycles.slice(0, 3).map(c => c.map(i => parId.get(i)?.name).join(' -> ')));
+
+// Orphelin au sens genealogique : personne sans aucun lien de famille. Elle
+// apparaitrait dans l'arbre comme une carte isolee, sans rattachement possible.
+const isoles = D.people.filter(x => !(x.parents || []).length && !(x.children || []).length
+  && !(x.partners || []).length && !(x.siblings || []).length);
+t('aucune personne totalement isolee', isoles.length === 0, isoles.slice(0, 6).map(x => x.name));
+
+// Sans parent declare, mais rattachee par ailleurs : legitime (personne mariee
+// dans la famille), on se contente de compter.
+const sansParents = D.people.filter(x => !(x.parents || []).length);
+console.log('      ' + sansParents.length + ' personne(s) sans parents declares, dont '
+  + sansParents.filter(x => (x.partners || []).length).length + ' rattachee(s) par alliance');
+
+// Familles incoherentes.
+const famVides = D.families.filter(f => f.partnerIds.length + f.childIds.length === 0);
+t('aucune famille sans aucun membre', famVides.length === 0, famVides.map(f => f.id));
+const famSansPartenaire = D.families.filter(f => f.partnerIds.length === 0 && f.childIds.length > 0);
+t('aucune famille d\'enfants sans aucun parent', famSansPartenaire.length === 0, famSansPartenaire.map(f => f.id));
+const famUnSeul = D.families.filter(f => f.partnerIds.length === 1);
+console.log('      ' + famUnSeul.length + ' famille(s) a un seul parent declare (legitime, signale pour information)');
+
+// Deux familles identiques : meme couple, memes enfants.
+const vues = new Map();
+const famDoublons = [];
+for (const f of D.families) {
+  const k = [...f.partnerIds].sort().join('+') + '|' + [...f.childIds].sort().join('+');
+  if (!f.partnerIds.length && !f.childIds.length) continue;
+  if (vues.has(k)) famDoublons.push([vues.get(k), f.id]);
+  else vues.set(k, f.id);
+}
+t('aucune famille en double', famDoublons.length === 0, famDoublons.slice(0, 4));
+
+// Une personne ne peut pas etre a la fois enfant et conjoint de la meme famille.
+const melanges = D.families.filter(f => f.partnerIds.some(p => f.childIds.includes(p)));
+t('aucune personne a la fois parent et enfant dans la meme famille', melanges.length === 0, melanges.map(f => f.id));
+
+// Une personne ne devrait avoir qu'une seule famille parente.
+const plusieursFamilles = D.people.filter(x => (x.parentFamilyIds || []).length > 1);
+console.log('      ' + plusieursFamilles.length + ' personne(s) rattachee(s) a plusieurs familles parentes (adoption, remariage ou erreur)');
+const parenteContradictoire = plusieursFamilles.filter(x => (x.parents || []).length > 2);
+t('aucune personne avec plus de deux parents', parenteContradictoire.length === 0,
+  parenteContradictoire.slice(0, 4).map(x => x.name + ' : ' + x.parents.length));
+
 console.log('\n=== COMPTES ===');
 t('les compteurs de groupes couvrent tout le monde',
   D.groups.paternel.length + D.groups.maternel.length >= D.groups.connected.length - D.groups.outsideBranches.length);
