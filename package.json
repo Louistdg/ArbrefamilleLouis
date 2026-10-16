@@ -1,0 +1,14 @@
+{
+  "name": "arbre-famille-louis",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Service Railway du site familial « Notre histoire · Arbre généalogique »",
+  "scripts": {
+    "test": "node scripts/test-server.mjs",
+    "test:app": "node scripts/verify-app.mjs index.html",
+    "test:all": "npm run test:app && npm test",
+    "patch": "node scripts/patch-app.mjs index.html index.corrige.html",
+    "bundle": "node scripts/prepare-bundle.mjs index.html .env.railway"
+  }
+}

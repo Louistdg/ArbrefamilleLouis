@@ -2,10 +2,16 @@
 .env
 .env.*
 !.env.example
-index.html
+
+# Le HTML de l'application contient les données personnelles de la famille.
+# Le motif couvre aussi toute copie de travail (index.corrige.html, ...) :
+# ce dépôt est public, aucune de ces copies ne doit y entrer.
+index*.html
+
 *.ged
 *.gedcom
 *.b64
 contributions.json
 data/
 backups/
+node_modules/
