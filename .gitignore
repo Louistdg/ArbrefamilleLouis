@@ -15,3 +15,11 @@ contributions.json
 data/
 backups/
 node_modules/
+
+# Données personnelles : jamais publiées
+donnees/
+
+# Extractions de travail : contiennent les donnees familiales
+out-*.json
+tmp-*.json
+*.tmp

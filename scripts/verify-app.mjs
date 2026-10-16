@@ -11,10 +11,11 @@
 //
 // Usage : node scripts/verify-app.mjs [index.corrige.html]
 
-import {readFileSync} from 'node:fs';
+import {readFileSync, existsSync} from 'node:fs';
 import {patchApp, PATCHES} from './patch-app.mjs';
 import {exclureMineurs, estMineur, anneeDeNaissance} from './exclure-mineurs.mjs';
 import {masquerVivants, estPlausiblementVivant} from './masquer-vivants.mjs';
+import {injecterDonnees} from './injecter-donnees.mjs';
 
 const file = process.argv[2] || 'index.html';
 let source;
@@ -29,7 +30,13 @@ catch {
 // On verifie le HTML tel qu'il sera deploye : retrait des mineurs puis
 // application des correctifs. Passer le fichier d'origine ou une version deja
 // corrigee donne le meme resultat.
-const prune = exclureMineurs(source, {actif: true});
+// Les donnees publiees viennent de la fusion du dernier export GEDCOM : les
+// verifications doivent porter sur ce qui sera reellement en ligne.
+let sourceDonnees = source;
+if (existsSync('donnees/famille.json')) {
+  sourceDonnees = injecterDonnees(source, JSON.parse(readFileSync('donnees/famille.json', 'utf8')));
+}
+const prune = exclureMineurs(sourceDonnees, {actif: true});
 const masque = masquerVivants(prune.html, {actif: true});
 const result = patchApp(masque.html);
 const html = result.html;

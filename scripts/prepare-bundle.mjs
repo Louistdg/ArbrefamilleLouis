@@ -1,8 +1,9 @@
-import {readFileSync, writeFileSync} from 'node:fs';
+import {readFileSync, writeFileSync, existsSync} from 'node:fs';
 import {gzipSync} from 'node:zlib';
 import {patchApp, report} from './patch-app.mjs';
 import {exclureMineurs} from './exclure-mineurs.mjs';
 import {masquerVivants} from './masquer-vivants.mjs';
+import {injecterDonnees} from './injecter-donnees.mjs';
 
 // Produit localement les variables APP_CHUNK_* attendues par la fonction Railway.
 // Ne pas ajouter au dépôt Git le fichier .env.railway généré.
@@ -25,6 +26,21 @@ const input = positional[0] || 'index.html';
 const output = positional[1] || '.env.railway';
 
 let html = readFileSync(input, 'utf8');
+
+// Les donnees fusionnees du dernier export GEDCOM remplacent celles du fichier.
+// Le HTML n'est pas versionne : c'est ici que passe la mise a jour de l'arbre.
+// --garder-donnees garde les donnees telles qu'elles sont dans le fichier.
+if (!flags.has('--garder-donnees') && existsSync('donnees/famille.json')) {
+  const donnees = JSON.parse(readFileSync('donnees/famille.json', 'utf8'));
+  html = injecterDonnees(html, donnees);
+  const ajout = donnees.meta.integratedFrom || {};
+  console.log('Donnees fusionnees appliquees : ' + donnees.people.length + ' personnes, '
+    + donnees.families.length + ' familles, ' + donnees.sources.length + ' sources');
+  if (ajout.personnesAjoutees) {
+    console.log('  apport de l\'export : +' + ajout.personnesAjoutees + ' personnes, +'
+      + ajout.famillesAjoutees + ' familles, +' + ajout.sourcesAjoutees + ' sources');
+  }
+}
 
 // Le fichier publie ne doit pas exposer d'enfant : nom, date et lieu de
 // naissance d'une personne mineure ne sont pas destines a une page publique.
