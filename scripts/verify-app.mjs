@@ -302,6 +302,9 @@ t('l\'aide s\'ouvre seule a la premiere visite puis se retient',
   html.includes("localStorage.getItem('arbre-aide-vue')"));
 t('un bandeau de reperes reste visible',
   html.includes("r.innerHTML='<b>Glissez</b>"));
+t('la regle des generations est fixe a gauche, hors du repere de l\'arbre',
+  html.includes('function reperesMarkup(') && html.includes('id="reperes"')
+  && html.includes("el('reperes')?.setAttribute('transform'"));
 t('les boutons d\'ouverture sont plus grands (47 unites)',
   html.includes('width="47" height="47"'));
 t('les fonctions utiles sont exposees entre blocs de script',

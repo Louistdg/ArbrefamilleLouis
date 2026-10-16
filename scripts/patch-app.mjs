@@ -213,15 +213,17 @@ export const PATCHES = [
      "    for(const n of noeuds){const lvl=n.person.generation;const b=parNiveau.get(lvl)||{min:Infinity,max:-Infinity};b.min=Math.min(b.min,n.y-n.height/2);b.max=Math.max(b.max,n.y+n.height/2);parNiveau.set(lvl,b);}",
      "    if(parNiveau.size<2)return '';",
      "    const minX=Math.min(...noeuds.map(n=>n.x-n.width/2)),maxX=Math.max(...noeuds.map(n=>n.x+n.width/2));",
-     "    let out='';",
+     "    let out='',reperes=[];",
      "    [...parNiveau.keys()].sort((a,b)=>a-b).forEach((lvl,i)=>{",
      "      const b=parNiveau.get(lvl),y=b.min-9,h=(b.max-b.min)+18;",
      "      out+=`<rect class=\"bande-generation\" x=\"${minX-54}\" y=\"${y}\" width=\"${(maxX-minX)+108}\" height=\"${h}\" rx=\"12\" fill=\"${i%2?'#27544705':'#2754470d'}\" pointer-events=\"none\"/>`;",
-     "      out+=`<text class=\"etiquette-generation\" x=\"${minX-12}\" y=\"${y+20}\" text-anchor=\"end\" pointer-events=\"none\">${esc(nomGeneration(lvl))}</text>`;",
+     "      reperes.push({y:y+20,texte:nomGeneration(lvl)});",
      "    });",
+     "    g.graph().reperes=reperes;",
      "    return out;",
 
-     "  }"].join('\n')),
+     "  }",
+     "  function reperesMarkup(g){const r=(g.graph()&&g.graph().reperes)||[];return r.map(x=>`<text class=\"etiquette-generation\" x=\"12\" y=\"${x.y}\">${esc(x.texte)}</text>`).join('');}"].join('\n')),
 
   P('carte-texte-constant',
     "Changement visuel 1 : nom court et annees calcules en plus des lignes completes, pour que chaque niveau de zoom dispose d'un texte lisible",
@@ -267,7 +269,7 @@ export const PATCHES = [
   P('zoom-semantique-echelle',
     "Changement visuel 1 : l'inverse de l'echelle est publiee a chaque transformation, pour que les initiales restent lisibles meme tres dezoomé",
     "function transform(){el('viewport')?.setAttribute('transform',`translate(${state.tx} ${state.ty}) scale(${state.scale})`);const t=el('tree');if(t){const z=zoomTier();if(t.dataset.zoom!==z)t.dataset.zoom=z;}}",
-    "function transform(){el('viewport')?.setAttribute('transform',`translate(${state.tx} ${state.ty}) scale(${state.scale})`);const t=el('tree');if(t){const z=zoomTier();if(t.dataset.zoom!==z)t.dataset.zoom=z;const ls=Math.min(6,1/Math.max(state.scale,.05)).toFixed(3);if(t.style.getPropertyValue('--ls')!==ls)t.style.setProperty('--ls',ls);}}"),
+    "function transform(){el('viewport')?.setAttribute('transform',`translate(${state.tx} ${state.ty}) scale(${state.scale})`);el('reperes')?.setAttribute('transform',`translate(0 ${state.ty}) scale(${state.scale})`);const t=el('tree');if(t){const z=zoomTier();if(t.dataset.zoom!==z)t.dataset.zoom=z;const ls=Math.min(6,1/Math.max(state.scale,.05)).toFixed(3);if(t.style.getPropertyValue('--ls')!==ls)t.style.setProperty('--ls',ls);}}"),
 
   P('fluidite-memoire',
     "Changement visuel 3 : la mise en page dagre est memorisee et le fondu enchaine entre deux vues est fourni, au lieu d'un remplacement brutal",
@@ -354,6 +356,11 @@ export const PATCHES = [
     "Cibles plus grandes : les boutons s'ecartent davantage de la carte pour ne pas la chevaucher",
     "const cy=direction==='anc'?top-22:top+n.height+22;",
     "const cy=direction==='anc'?top-28:top+n.height+28;"),
+
+  P('regle-generation-svg',
+    "Reperes de generation : une regle fixe a gauche, toujours visible, hors du repere de l'arbre qui defile",
+    '</g></svg>`;const p=people.get(state.focus);',
+    '</g><g id="reperes" aria-hidden="true">${reperesMarkup(state.graph)}</g></svg>`;const p=people.get(state.focus);'),
 
 ];
 
@@ -476,6 +483,7 @@ function CSS_FIXES(){
     "",
     "/* 4) Bandes de generation : un repere visuel et nomme par niveau. */",
     ".bande-generation{pointer-events:none}",
+    "#reperes{pointer-events:none}",
     ".etiquette-generation{font-size:15px;font-weight:600;fill:#6d7b74;pointer-events:none;letter-spacing:.2px}",
     "#tree[data-zoom=\"far\"] .etiquette-generation{display:none}",
     "",
