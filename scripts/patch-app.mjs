@@ -216,7 +216,7 @@ export const PATCHES = [
      "    let out='',reperes=[];",
      "    [...parNiveau.keys()].sort((a,b)=>a-b).forEach((lvl,i)=>{",
      "      const b=parNiveau.get(lvl),y=b.min-9,h=(b.max-b.min)+18;",
-    "      out+=`<rect class=\"bande-generation\" x=\"${b.minX-26}\" y=\"${y}\" width=\"${(b.maxX-b.minX)+52}\" height=\"${h}\" rx=\"12\" fill=\"#27544709\" pointer-events=\"none\"/>`;",
+    "      /* Plus de bande teintee : Louis veut un fond uniforme, seules les cartes ressortent. */",
      "      reperes.push({haut:y,hauteur:h,texte:nomGeneration(lvl)});",
      "    });",
      "    g.graph().reperes=reperes;",
